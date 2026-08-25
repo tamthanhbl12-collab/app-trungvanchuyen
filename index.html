@@ -1103,19 +1103,37 @@ async function osrmRoute(from,to){
   if(j.code!=='Ok'||!j.routes||!j.routes.length) throw new Error('no route');
   return j.routes.map(r=>({km:r.distance/1000, min:r.duration/60, geometry:r.geometry}));
 }
-async function ghRoute(from,to,key){
-  const base=`https://graphhopper.com/api/1/route?point=${from.lat},${from.lng}&point=${to.lat},${to.lng}`
-    +`&profile=car&locale=vi&points_encoded=false&instructions=false&key=${encodeURIComponent(key)}`;
-  let r=await fetch(base+`&algorithm=alternative_route&alternative_route.max_paths=3&ch.disable=true`);
-  if(!r.ok) r=await fetch(base);                 // thử lại không tuyến phụ
-  if(!r.ok){ let t=''; try{t=(await r.text()).slice(0,150);}catch(e){}
-    throw new Error(`GraphHopper ${r.status} ${t}`); }
-  const j=await r.json();
+function ghParse(j){
   if(!j.paths||!j.paths.length) throw new Error('không có tuyến');
   const routes=j.paths.map(p=>({km:p.distance/1000, min:p.time/60000,
     geometry:{type:'LineString',coordinates:p.points.coordinates}}));
   routes.sort((a,b)=>a.min-b.min);              // ưu tiên nhanh nhất
   return routes;
+}
+async function ghRoute(from,to,key){
+  // Ưu tiên đường lớn (quốc lộ/tỉnh lộ) qua custom_model — giống thực tế
+  try{
+    const r=await fetch('https://graphhopper.com/api/1/route?key='+encodeURIComponent(key),{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({profile:'car',points:[[from.lng,from.lat],[to.lng,to.lat]],
+        points_encoded:false,instructions:false,'ch.disable':true,
+        algorithm:'alternative_route','alternative_route.max_paths':4,
+        custom_model:{priority:[
+          {if:'road_class == MOTORWAY',multiply_by:'1.8'},
+          {if:'road_class == TRUNK',multiply_by:'1.6'},
+          {if:'road_class == PRIMARY',multiply_by:'1.35'},
+          {if:'road_class == SECONDARY',multiply_by:'1.15'},
+          {if:'road_class == TERTIARY',multiply_by:'1.05'}]}})});
+    if(r.ok){ const j=await r.json(); if(j.paths&&j.paths.length) return ghParse(j); }
+  }catch(e){}
+  // dự phòng: GET đơn giản có tuyến phụ (nếu gói không hỗ trợ custom_model)
+  const base=`https://graphhopper.com/api/1/route?point=${from.lat},${from.lng}&point=${to.lat},${to.lng}`
+    +`&profile=car&locale=vi&points_encoded=false&instructions=false&key=${encodeURIComponent(key)}`;
+  let r=await fetch(base+`&algorithm=alternative_route&alternative_route.max_paths=3&ch.disable=true`);
+  if(!r.ok) r=await fetch(base);
+  if(!r.ok){ let t=''; try{t=(await r.text()).slice(0,150);}catch(e){}
+    throw new Error(`GraphHopper ${r.status} ${t}`); }
+  return ghParse(await r.json());
 }
 async function roadRoute(from,to){
   const key=(localStorage.getItem('gh_key')||'').trim();
