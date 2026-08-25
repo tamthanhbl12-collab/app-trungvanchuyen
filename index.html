@@ -1143,10 +1143,24 @@ async function ghRoute(from,to,key){
     throw new Error(`GraphHopper ${r.status} ${t}`); }
   return ghParse(await r.json());
 }
+async function mbRoute(from,to,token){
+  const u=`https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${from.lng},${from.lat};${to.lng},${to.lat}`
+    +`?alternatives=true&geometries=geojson&overview=full&access_token=${encodeURIComponent(token)}`;
+  const r=await fetch(u);
+  if(!r.ok){ let t='';try{t=(await r.text()).slice(0,150);}catch(e){}; throw new Error('Mapbox '+r.status+' '+t); }
+  const j=await r.json();
+  if(!j.routes||!j.routes.length) throw new Error('không có tuyến');
+  const routes=j.routes.map(x=>({km:x.distance/1000,min:x.duration/60,geometry:x.geometry}));
+  routes.sort((a,b)=>a.min-b.min);
+  return routes;
+}
 async function roadRoute(from,to){
   const key=(localStorage.getItem('gh_key')||'').trim();
-  if(key){ try{ const r=await ghRoute(from,to,key); r.engine='gh'; return r; }
-    catch(e){ window._orsErr=String(e); } }
+  const isMB=key.startsWith('pk.');
+  if(key){ try{
+      const r= isMB ? await mbRoute(from,to,key) : await ghRoute(from,to,key);
+      r.engine= isMB?'mb':'gh'; return r;
+    } catch(e){ window._orsErr=String(e); } }
   const r=await osrmRoute(from,to); r.engine = key?'osrm_fallback':'osrm'; return r;
 }
 function drawRoutes(routes, act){
@@ -1182,14 +1196,17 @@ async function computeRoad(from,to,label){
           + routes.map((rt,i)=>`<div class="route ${i===act?'on':''}" data-i="${i}">
                <b>Tuyến ${i+1}</b> · ${rt.km.toFixed(1)} km · ~${Math.round(rt.min)} phút</div>`).join('')
         : '';
-      const note = routes.engine==='gh'
+      const accurate = routes.engine==='mb' || routes.engine==='gh';
+      const note = routes.engine==='mb'
+          ? `<div class="kv" style="color:#34d399;margin-top:4px">✅ Mapbox · chọn đường giống Google (ưu tiên quốc lộ) + giờ có giao thông</div>`
+        : routes.engine==='gh'
           ? `<div class="kv" style="color:#34d399;margin-top:4px">✅ Nhiều tuyến (GraphHopper) · giờ sát thực tế</div>`
         : routes.engine==='osrm_fallback'
           ? `<div class="kv" style="color:#f59e0b;margin-top:4px">⚠️ Khoá định tuyến chưa dùng được — tạm dùng dịch vụ mặc định. Kiểm tra khoá trong 📍 Điểm xuất phát.<br><span style="color:#8a94a8;font-size:11px">Chi tiết lỗi: ${window._orsErr||'?'}</span></div>`
           : '';
       rr.innerHTML=`<div class="distline"><div>
           <div class="big" style="color:#34d399">${routes[act].km.toFixed(1)} km</div>
-          <div class="mut">đường bộ tới ${label} · ~${Math.round(routes[act].min)} phút${routes.engine==='gh'?'':' <i>(ước tính)</i>'}</div></div></div>
+          <div class="mut">đường bộ tới ${label} · ~${Math.round(routes[act].min)} phút${accurate?'':' <i>(ước tính)</i>'}</div></div></div>
         ${note}
         ${others}
         <a class="btn" style="margin-top:8px;display:block" target="_blank" href="${gmap}">🧭 Chỉ đường Google Maps (tuyến & giờ chính xác)</a>`;
@@ -1222,12 +1239,12 @@ function openBaseSetup(){
     </div>
     <div id="baseMsg" class="kv"></div>
     <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
-    <div class="fld"><label>🧭 Khoá định tuyến nâng cao (GraphHopper) — tuỳ chọn<br>
-      <span style="color:var(--muted)">Có khoá → app hiện <b>nhiều tuyến</b> + giờ chính xác. Không có → vẫn chạy 1 tuyến.</span></label>
-      <input id="ghKey" placeholder="Dán khoá GraphHopper vào đây" value="${(localStorage.getItem('gh_key')||'')}"></div>
+    <div class="fld"><label>🧭 Khoá định tuyến nâng cao — tuỳ chọn<br>
+      <span style="color:var(--muted)">Nên dùng <b>Mapbox</b> (chọn đường giống Google, ưu tiên quốc lộ). Dán khoá <b>Mapbox</b> (bắt đầu <code>pk.</code>) hoặc GraphHopper — app tự nhận.</span></label>
+      <input id="ghKey" placeholder="Dán khoá Mapbox (pk...) hoặc GraphHopper" value="${(localStorage.getItem('gh_key')||'')}"></div>
     <div class="miniactions">
       <button id="ghSave" class="primary">💾 Lưu khoá</button>
-      <a class="btn ghost" style="text-decoration:none;display:flex;align-items:center;justify-content:center" target="_blank" href="https://www.graphhopper.com/dashboard/#/register">🔑 Lấy khoá miễn phí</a>
+      <a class="btn ghost" style="text-decoration:none;display:flex;align-items:center;justify-content:center" target="_blank" href="https://account.mapbox.com/auth/signup/">🗺️ Lấy khoá Mapbox</a>
     </div>
     <div id="ghMsg" class="kv"></div>
   </div>`;
@@ -1404,7 +1421,13 @@ function optimizeOrder(base, stops){
 }
 async function roadRouteMulti(points){
   const key=(localStorage.getItem('gh_key')||'').trim();
-  if(key){ try{
+  if(key.startsWith('pk.')){ try{
+    const coords=points.map(p=>`${p.lng},${p.lat}`).join(';');
+    const r=await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?geometries=geojson&overview=full&access_token=${encodeURIComponent(key)}`);
+    if(r.ok){ const j=await r.json(); if(j.routes&&j.routes.length){const x=j.routes[0];
+      return {km:x.distance/1000,min:x.duration/60,geometry:x.geometry,engine:'mb'};}}
+  }catch(e){} }
+  else if(key){ try{
     const pp=points.map(p=>`point=${p.lat},${p.lng}`).join('&');
     const r=await fetch(`https://graphhopper.com/api/1/route?${pp}&profile=car&points_encoded=false&instructions=false&key=${encodeURIComponent(key)}`);
     if(r.ok){ const j=await r.json(); if(j.paths&&j.paths.length){const p=j.paths[0];
