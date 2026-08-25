@@ -727,6 +727,33 @@ svg.leaflet-image-layer.leaflet-interactive path {
   #map{height:100%}
   .leaflet-popup-content{font-size:13px}
   .foot{padding:8px 14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);text-align:center}
+  /* toolbar + đại lý + tuyến đường */
+  .bar{display:flex;gap:8px;padding:0 14px 12px;border-bottom:1px solid var(--line)}
+  .bar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 6px;border-radius:9px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text);cursor:pointer;font-size:12px}
+  .bar button:hover{border-color:var(--accent)}
+  .bar button small{color:var(--muted);font-size:10px}
+  .bar button.act{border-color:var(--accent);background:#132a52}
+  .distline{display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:10px;border-radius:9px;
+    background:#0e2038;border:1px solid #1f3b63;font-size:13px}
+  .distline .big{font-size:17px;font-weight:700;color:#7db4ff}
+  .distline .mut{color:var(--muted);font-size:12px}
+  .distline button{margin-left:auto;padding:6px 10px;border-radius:8px;border:1px solid var(--line);
+    background:var(--accent);color:#fff;font-size:12px;cursor:pointer;font-weight:600}
+  .fld{margin:8px 0}
+  .fld label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  .dealer{display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;
+    margin-bottom:6px;background:var(--panel)}
+  .dealer:hover{border-color:var(--green)}
+  .dealer .l{min-width:0;flex:1;cursor:pointer}
+  .dealer .l .n{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dealer .l .s{font-size:11px;color:var(--muted)}
+  .dealer .km{font-size:12px;color:var(--green);font-weight:700}
+  .dealer .del{border:0;background:transparent;color:#ef5a5a;cursor:pointer;font-size:15px;padding:2px 4px}
+  .miniactions{display:flex;gap:6px;margin:6px 0 12px;flex-wrap:wrap}
+  .miniactions button{flex:1;min-width:90px;padding:8px;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel);color:var(--text);font-size:12px;cursor:pointer}
+  .miniactions button.primary{background:var(--green);color:#04210f;border-color:var(--green);font-weight:700}
   @media(max-width:800px){
     #app{grid-template-columns:1fr;grid-template-rows:46vh 54vh}
     #side{order:2;border-right:0;border-top:1px solid var(--line)}
@@ -747,6 +774,10 @@ svg.leaflet-image-layer.leaflet-interactive path {
         <input id="q" type="text" placeholder="Nhập tên xã/phường… (vd: An Khánh)" autocomplete="off">
       </div>
       <div id="results"></div>
+    </div>
+    <div class="bar">
+      <button id="btnBase" type="button"><span>📍 Điểm xuất phát</span><small id="baseLbl">Chưa đặt</small></button>
+      <button id="btnDealers" type="button"><span>🏪 Đại lý</span><small id="dealerCount">0 điểm</small></button>
     </div>
     <div class="content" id="content">
       <div class="empty" id="empty">
@@ -836,6 +867,8 @@ async function selectWard(code, fly=true){
   document.getElementById('content').innerHTML=
     `<div class="empty">⏳ Đang tải bản đồ <b>${x.name}</b>…</div>`;
   if(radiusLayer){map.removeLayer(radiusLayer);radiusLayer=null;}
+  if(typeof clearRoute==='function') clearRoute();
+  dealerViewOpen=false;
 
   // ensure province layers loaded (selected + neighbor provinces)
   const provs=new Set([x.prov]);
@@ -914,6 +947,10 @@ function renderInfo(x){
       <div class="actions">
         <a class="btn" target="_blank" href="https://www.google.com/maps/search/?api=1&query=${x.lat},${x.lng}">🗺️ Mở Google Maps</a>
       </div>
+      <div id="fromBase"></div>
+      <div class="miniactions">
+        <button id="addDealer" class="primary">➕ Thêm đại lý tại xã này</button>
+      </div>
     </div>
     <div class="card">
       <div class="secttitle">
@@ -931,6 +968,8 @@ function renderInfo(x){
   const rs=el.querySelector('#radsel');
   if(rs) rs.onchange=()=>{nbRadius=+rs.value;renderInfo(x);};
   el.querySelectorAll('.nb').forEach(r=>r.onclick=()=>selectWard(r.dataset.c,true));
+  const ad=el.querySelector('#addDealer'); if(ad) ad.onclick=()=>openDealerForm(x);
+  updateFromBase(x);
 }
 function nbRow(code,km){
   const o=byCode.get(code); if(!o) return '';
@@ -986,6 +1025,240 @@ q.addEventListener('input',doSearch);
 q.addEventListener('focus',doSearch);
 provSel.addEventListener('change',doSearch);
 document.addEventListener('click',e=>{if(!e.target.closest('.search'))results.style.display='none';});
+
+// ================= ĐIỂM XUẤT PHÁT + ĐẠI LÝ =================
+const LS_KEY='logistic_v1';
+let BASE=null, SUP=[], dealerViewOpen=false;
+const EMPTY_HTML=document.getElementById('content').innerHTML;
+
+function loadStore(){
+  try{const s=JSON.parse(localStorage.getItem(LS_KEY));
+    if(s){BASE=s.base||null; SUP=Array.isArray(s.suppliers)?s.suppliers:[];}}catch(e){}
+}
+function saveStore(){
+  localStorage.setItem(LS_KEY,JSON.stringify({base:BASE,suppliers:SUP}));
+  if(window.cloudPush){try{window.cloudPush({base:BASE,suppliers:SUP});}catch(e){}}  // hook Bước 2
+}
+function resetContent(){document.getElementById('content').innerHTML=EMPTY_HTML;}
+
+// ---- map layers ----
+const dealerLayer=L.layerGroup().addTo(map);
+let baseMarker=null, routeLayer=null;
+function clearRoute(){if(routeLayer){map.removeLayer(routeLayer);routeLayer=null;}}
+
+function refreshBase(){
+  document.getElementById('baseLbl').textContent = BASE ? (BASE.label||'Đã đặt') : 'Chưa đặt';
+  document.getElementById('btnBase').classList.toggle('act', !!BASE);
+  if(baseMarker){map.removeLayer(baseMarker);baseMarker=null;}
+  if(BASE){
+    baseMarker=L.marker([BASE.lat,BASE.lng],{icon:L.divIcon({className:'',
+      html:'<div style="font-size:26px;line-height:1">📍</div>',iconSize:[26,26],iconAnchor:[13,26]})})
+      .addTo(map).bindTooltip('Điểm xuất phát: '+(BASE.label||''),{direction:'top'});
+  }
+}
+function refreshDealerMarkers(){
+  dealerLayer.clearLayers();
+  SUP.forEach(s=>{
+    L.circleMarker([s.lat,s.lng],{radius:7,color:'#065f46',weight:2,fillColor:'#10b981',fillOpacity:1})
+      .addTo(dealerLayer).bindTooltip('🏪 '+s.name,{direction:'top'})
+      .on('click',()=>selectDealer(s.id));
+  });
+}
+function updateDealerCount(){
+  document.getElementById('dealerCount').textContent=SUP.length+' điểm';
+  document.getElementById('btnDealers').classList.toggle('act', dealerViewOpen);
+}
+
+// ---- tính đường bộ (OSRM public, không cần key) ----
+async function roadRoute(from,to){
+  const u=`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`;
+  const j=await (await fetch(u)).json();
+  if(j.code!=='Ok'||!j.routes||!j.routes.length) throw new Error('no route');
+  const r=j.routes[0];
+  return {km:r.distance/1000, min:r.duration/60, geometry:r.geometry};
+}
+function drawRoute(geo){
+  clearRoute();
+  routeLayer=L.geoJSON(geo,{style:{color:'#22c55e',weight:5,opacity:.85}}).addTo(map);
+  try{map.fitBounds(routeLayer.getBounds(),{padding:[40,40]});}catch(e){}
+}
+function updateFromBase(obj){
+  const box=document.getElementById('fromBase'); if(!box) return;
+  if(!BASE){box.innerHTML=`<div class="distline"><span class="mut">Bấm 📍 <b>Điểm xuất phát</b> để tính quãng đường từ công ty tới đây.</span></div>`;return;}
+  const sl=hav(BASE.lat,BASE.lng,obj.lat,obj.lng);
+  box.innerHTML=`<div class="distline">
+      <div><div class="big">~${sl.toFixed(1)} km</div><div class="mut">chim bay từ ${BASE.label||'điểm xuất phát'}</div></div>
+      <button id="roadBtn">🚗 Đường đi thực tế</button>
+    </div><div id="roadResult"></div>`;
+  box.querySelector('#roadBtn').onclick=()=>computeRoad(BASE,obj,obj.name||'điểm này');
+}
+async function computeRoad(from,to,label){
+  const rr=document.getElementById('roadResult');
+  if(rr) rr.innerHTML=`<div class="kv">⏳ Đang tính đường đi thực tế…</div>`;
+  try{
+    const res=await roadRoute(from,to);
+    drawRoute(res.geometry);
+    if(rr) rr.innerHTML=`<div class="distline"><div>
+        <div class="big" style="color:#34d399">${res.km.toFixed(1)} km</div>
+        <div class="mut">đường bộ tới ${label} · khoảng ${Math.round(res.min)} phút xe</div></div></div>`;
+  }catch(e){
+    if(rr) rr.innerHTML=`<div class="kv">⚠️ Chưa tính được đường bộ (mạng yếu hoặc dịch vụ định tuyến đang bận). Thử lại sau.</div>`;
+  }
+}
+
+// ---- Điểm xuất phát: thiết lập ----
+function openBaseSetup(){
+  const el=document.getElementById('content'); dealerViewOpen=false; updateDealerCount();
+  el.innerHTML=`<div class="card">
+    <div class="name" style="font-size:17px">📍 Điểm xuất phát (công ty)</div>
+    <div class="kv">Hiện tại: <b>${BASE?(BASE.label||BASE.lat.toFixed(4)+', '+BASE.lng.toFixed(4)):'chưa đặt'}</b></div>
+    <div class="miniactions" style="margin-top:12px">
+      <button id="baseGPS" class="primary">📡 Dùng vị trí hiện tại (GPS)</button>
+    </div>
+    <div class="miniactions">
+      <button id="baseWard" ${selectedCode?'':'disabled'}>🏢 Đặt tại xã đang chọn${selectedCode?' ('+byCode.get(selectedCode).name+')':''}</button>
+    </div>
+    <div class="fld"><label>Hoặc nhập toạ độ (lat, lng)</label>
+      <input id="baseCoord" placeholder="vd: 10.7769, 106.7009" value="${BASE?BASE.lat+', '+BASE.lng:''}"></div>
+    <div class="miniactions">
+      <button id="baseCoordBtn">💾 Lưu toạ độ</button>
+      ${BASE?'<button id="baseClear">🗑️ Xoá</button>':''}
+      <button id="baseBack">← Quay lại</button>
+    </div>
+    <div id="baseMsg" class="kv"></div>
+  </div>`;
+  const setBase=(lat,lng,label)=>{BASE={lat,lng,label};saveStore();refreshBase();
+    selectedCode?selectWard(selectedCode,false):resetContent();};
+  el.querySelector('#baseGPS').onclick=()=>{
+    const m=el.querySelector('#baseMsg'); m.textContent='⏳ Đang lấy vị trí…';
+    if(!navigator.geolocation){m.textContent='Trình duyệt không hỗ trợ GPS.';return;}
+    navigator.geolocation.getCurrentPosition(
+      p=>setBase(+p.coords.latitude.toFixed(6),+p.coords.longitude.toFixed(6),'Vị trí hiện tại'),
+      e=>{m.textContent='Không lấy được vị trí (bạn cần cho phép quyền định vị).';});
+  };
+  const bw=el.querySelector('#baseWard');
+  if(bw) bw.onclick=()=>{const x=byCode.get(selectedCode); setBase(x.lat,x.lng,x.name+' ('+x.pname+')');};
+  el.querySelector('#baseCoordBtn').onclick=()=>{
+    const v=el.querySelector('#baseCoord').value.split(',').map(s=>parseFloat(s.trim()));
+    if(v.length!==2||isNaN(v[0])||isNaN(v[1])){el.querySelector('#baseMsg').textContent='Toạ độ không hợp lệ.';return;}
+    setBase(v[0],v[1],'Toạ độ ('+v[0].toFixed(4)+', '+v[1].toFixed(4)+')');
+  };
+  const bc=el.querySelector('#baseClear'); if(bc) bc.onclick=()=>{BASE=null;saveStore();refreshBase();openBaseSetup();};
+  el.querySelector('#baseBack').onclick=()=>{selectedCode?selectWard(selectedCode,false):resetContent();};
+}
+
+// ---- Đại lý: thêm ----
+function openDealerForm(x){
+  const el=document.getElementById('content');
+  el.innerHTML=`<div class="card">
+    <div class="name" style="font-size:17px">➕ Thêm đại lý / NCC</div>
+    <div class="kv">Tại xã: <b>${x.name}</b> · ${x.pname}</div>
+    <div class="fld"><label>Tên nhà cung cấp / đại lý *</label><input id="dName" placeholder="vd: Đại lý Gạo Minh Phát"></div>
+    <div class="fld"><label>Số điện thoại</label><input id="dPhone" placeholder="vd: 0901234567"></div>
+    <div class="fld"><label>Ghi chú (mặt hàng, địa chỉ cụ thể…)</label><input id="dNote" placeholder="vd: Gạo ST25, kho gần chợ"></div>
+    <div class="miniactions">
+      <button id="dSave" class="primary">💾 Lưu đại lý</button>
+      <button id="dCancel">Huỷ</button>
+    </div></div>`;
+  el.querySelector('#dName').focus();
+  el.querySelector('#dCancel').onclick=()=>selectWard(x.code,false);
+  el.querySelector('#dSave').onclick=()=>{
+    const name=el.querySelector('#dName').value.trim();
+    if(!name){el.querySelector('#dName').focus();return;}
+    SUP.push({id:'d'+Date.now(),name,phone:el.querySelector('#dPhone').value.trim(),
+      note:el.querySelector('#dNote').value.trim(),code:x.code,xaName:x.name,pname:x.pname,
+      lat:x.lat,lng:x.lng,ts:Date.now()});
+    saveStore(); refreshDealerMarkers(); showDealers();
+  };
+}
+
+// ---- Đại lý: danh sách ----
+function dealerToolbar(el){
+  const bar=document.createElement('div'); bar.className='miniactions';
+  bar.innerHTML=`<button id="expDealers">⬇️ Xuất file</button><button id="impDealers">⬆️ Nhập file</button><button id="backSearch">← Tra cứu</button>`;
+  el.appendChild(bar);
+  bar.querySelector('#backSearch').onclick=()=>{dealerViewOpen=false;updateDealerCount();selectedCode?selectWard(selectedCode,false):resetContent();};
+  bar.querySelector('#expDealers').onclick=()=>{
+    const blob=new Blob([JSON.stringify({base:BASE,suppliers:SUP},null,2)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='dai-ly.json';
+    document.body.appendChild(a);a.click();a.remove();
+  };
+  bar.querySelector('#impDealers').onclick=()=>{
+    const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';
+    inp.onchange=()=>{const f=inp.files[0];if(!f)return;const rd=new FileReader();
+      rd.onload=()=>{try{const d=JSON.parse(rd.result);
+        const incoming=Array.isArray(d.suppliers)?d.suppliers:(Array.isArray(d)?d:[]);
+        const ids=new Set(SUP.map(s=>s.id));
+        incoming.forEach(s=>{if(!ids.has(s.id))SUP.push(s);});
+        if(!BASE && d.base) BASE=d.base;
+        saveStore();refreshBase();refreshDealerMarkers();showDealers();
+      }catch(e){alert('File không hợp lệ.');}};
+      rd.readAsText(f);};
+    inp.click();
+  };
+}
+function showDealers(){
+  dealerViewOpen=true; updateDealerCount(); clearRoute();
+  const el=document.getElementById('content');
+  if(!SUP.length){
+    el.innerHTML=`<div class="card"><div class="kv">Chưa có đại lý nào.<br>Tìm 1 xã ở ô trên → chọn xã → bấm <b>➕ Thêm đại lý tại xã này</b>.</div></div>`;
+    dealerToolbar(el); return;
+  }
+  const withKm=SUP.map(s=>({s,km:BASE?hav(BASE.lat,BASE.lng,s.lat,s.lng):null}));
+  if(BASE) withKm.sort((a,b)=>a.km-b.km);
+  const rows=withKm.map(({s,km})=>`
+    <div class="dealer" data-id="${s.id}">
+      <div class="l"><div class="n">🏪 ${s.name}</div>
+        <div class="s">${s.xaName} · ${s.pname}${s.phone?' · ☎ '+s.phone:''}</div></div>
+      ${km!=null?`<div class="km">${km.toFixed(1)} km</div>`:''}
+      <button class="del" title="Xoá">🗑️</button>
+    </div>`).join('');
+  el.innerHTML=`<div class="card"><div class="secttitle"><h3>🏪 Đại lý của tôi (${SUP.length})</h3></div>
+     <div class="kv" style="margin-bottom:8px">${BASE?'Sắp theo khoảng cách từ '+(BASE.label||'điểm xuất phát')+'.':'Đặt 📍 điểm xuất phát để xếp theo khoảng cách.'}</div>
+     ${rows}</div>`;
+  dealerToolbar(el);
+  el.querySelectorAll('.dealer').forEach(d=>{
+    d.querySelector('.l').onclick=()=>selectDealer(d.dataset.id);
+    d.querySelector('.del').onclick=e=>{e.stopPropagation();
+      if(confirm('Xoá đại lý này?')){SUP=SUP.filter(z=>z.id!==d.dataset.id);saveStore();refreshDealerMarkers();showDealers();}};
+  });
+}
+function selectDealer(id){
+  const s=SUP.find(z=>z.id===id); if(!s) return;
+  dealerViewOpen=false; updateDealerCount(); clearRoute();
+  map.setView([s.lat,s.lng],13);
+  const others=SUP.filter(z=>z.id!==id)
+    .map(z=>({z,km:hav(s.lat,s.lng,z.lat,z.lng)})).sort((a,b)=>a.km-b.km).slice(0,8);
+  const el=document.getElementById('content');
+  el.innerHTML=`<div class="card">
+      <div class="name">🏪 ${s.name}</div>
+      <div class="badges"><span class="badge prov">📍 ${s.pname}</span><span class="badge">${s.xaName}</span>${s.phone?`<span class="badge">☎ ${s.phone}</span>`:''}</div>
+      ${s.note?`<div class="kv"><b>Ghi chú:</b> ${s.note}</div>`:''}
+      <div id="fromBase"></div>
+      <div class="miniactions">
+        <button id="toWard">Xem xã ${s.xaName}</button>
+        <button id="delD">🗑️ Xoá đại lý</button>
+        <button id="backD">← Danh sách</button>
+      </div>
+    </div>
+    <div class="card"><div class="secttitle"><h3>🏪 Đại lý gần đây</h3></div>
+      ${others.length?others.map(o=>`<div class="dealer" data-id="${o.z.id}">
+          <div class="l"><div class="n">🏪 ${o.z.name}</div><div class="s">${o.z.xaName} · ${o.z.pname}</div></div>
+          <div class="km">${o.km.toFixed(1)} km</div></div>`).join('')
+        :'<div class="kv">Chưa có đại lý khác để so sánh.</div>'}
+    </div>`;
+  updateFromBase(s);
+  el.querySelector('#toWard').onclick=()=>selectWard(s.code,true);
+  el.querySelector('#backD').onclick=()=>showDealers();
+  el.querySelector('#delD').onclick=()=>{if(confirm('Xoá đại lý này?')){SUP=SUP.filter(z=>z.id!==id);saveStore();refreshDealerMarkers();showDealers();}};
+  el.querySelectorAll('.dealer').forEach(d=>d.querySelector('.l').onclick=()=>selectDealer(d.dataset.id));
+}
+
+// ---- init ----
+loadStore(); refreshBase(); refreshDealerMarkers(); updateDealerCount();
+document.getElementById('btnBase').onclick=openBaseSetup;
+document.getElementById('btnDealers').onclick=showDealers;
+</script>
 </script>
 </body>
 </html>
