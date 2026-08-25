@@ -754,6 +754,14 @@ svg.leaflet-image-layer.leaflet-interactive path {
   .miniactions button{flex:1;min-width:90px;padding:8px;border-radius:8px;border:1px solid var(--line);
     background:var(--panel);color:var(--text);font-size:12px;cursor:pointer}
   .miniactions button.primary{background:var(--green);color:#04210f;border-color:var(--green);font-weight:700}
+  .miniactions button.danger{color:#ef5a5a;border-color:#5a2530}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:3000}
+  .dialog{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:300px;width:86%;box-shadow:0 20px 50px rgba(0,0,0,.6)}
+  .dialog .dmsg{font-size:14px;margin-bottom:14px;line-height:1.5}
+  .dialog .dbtns{display:flex;gap:8px}
+  .dialog .dbtns button{flex:1;padding:9px;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line)}
+  .dialog .dbtns .c{background:var(--panel);color:var(--text)}
+  .dialog .dbtns .ok{background:#ef4444;color:#fff;border-color:#ef4444}
   @media(max-width:800px){
     #app{grid-template-columns:1fr;grid-template-rows:46vh 54vh}
     #side{order:2;border-right:0;border-top:1px solid var(--line)}
@@ -1040,6 +1048,18 @@ function saveStore(){
   if(window.cloudPush){try{window.cloudPush({base:BASE,suppliers:SUP});}catch(e){}}  // hook Bước 2
 }
 function resetContent(){document.getElementById('content').innerHTML=EMPTY_HTML;}
+function confirmBox(msg){
+  return new Promise(res=>{
+    const ov=document.createElement('div'); ov.className='overlay';
+    ov.innerHTML=`<div class="dialog"><div class="dmsg">${msg}</div>
+      <div class="dbtns"><button class="c">Huỷ</button><button class="ok">Xoá</button></div></div>`;
+    document.body.appendChild(ov);
+    const done=v=>{ov.remove();res(v);};
+    ov.querySelector('.c').onclick=()=>done(false);
+    ov.querySelector('.ok').onclick=()=>done(true);
+    ov.onclick=e=>{if(e.target===ov)done(false);};
+  });
+}
 
 // ---- map layers ----
 const dealerLayer=L.layerGroup().addTo(map);
@@ -1175,9 +1195,13 @@ function openDealerForm(x){
 // ---- Đại lý: danh sách ----
 function dealerToolbar(el){
   const bar=document.createElement('div'); bar.className='miniactions';
-  bar.innerHTML=`<button id="expDealers">⬇️ Xuất file</button><button id="impDealers">⬆️ Nhập file</button><button id="backSearch">← Tra cứu</button>`;
+  bar.innerHTML=`<button id="expDealers">⬇️ Xuất file</button><button id="impDealers">⬆️ Nhập file</button>`
+    +(SUP.length?`<button id="clrDealers" class="danger">🗑️ Xoá tất cả</button>`:``)
+    +`<button id="backSearch">← Tra cứu</button>`;
   el.appendChild(bar);
   bar.querySelector('#backSearch').onclick=()=>{dealerViewOpen=false;updateDealerCount();selectedCode?selectWard(selectedCode,false):resetContent();};
+  const clr=bar.querySelector('#clrDealers');
+  if(clr) clr.onclick=async()=>{if(await confirmBox('Xoá <b>toàn bộ '+SUP.length+' đại lý</b>? Không thể hoàn tác.')){SUP=[];saveStore();refreshDealerMarkers();showDealers();}};
   bar.querySelector('#expDealers').onclick=()=>{
     const blob=new Blob([JSON.stringify({base:BASE,suppliers:SUP},null,2)],{type:'application/json'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='dai-ly.json';
@@ -1219,8 +1243,10 @@ function showDealers(){
   dealerToolbar(el);
   el.querySelectorAll('.dealer').forEach(d=>{
     d.querySelector('.l').onclick=()=>selectDealer(d.dataset.id);
-    d.querySelector('.del').onclick=e=>{e.stopPropagation();
-      if(confirm('Xoá đại lý này?')){SUP=SUP.filter(z=>z.id!==d.dataset.id);saveStore();refreshDealerMarkers();showDealers();}};
+    d.querySelector('.del').onclick=async e=>{e.stopPropagation();
+      const s=SUP.find(z=>z.id===d.dataset.id);
+      if(await confirmBox('Xoá đại lý <b>'+(s?s.name:'')+'</b>?')){
+        SUP=SUP.filter(z=>z.id!==d.dataset.id);saveStore();refreshDealerMarkers();showDealers();}};
   });
 }
 function selectDealer(id){
@@ -1250,7 +1276,7 @@ function selectDealer(id){
   updateFromBase(s);
   el.querySelector('#toWard').onclick=()=>selectWard(s.code,true);
   el.querySelector('#backD').onclick=()=>showDealers();
-  el.querySelector('#delD').onclick=()=>{if(confirm('Xoá đại lý này?')){SUP=SUP.filter(z=>z.id!==id);saveStore();refreshDealerMarkers();showDealers();}};
+  el.querySelector('#delD').onclick=async()=>{if(await confirmBox('Xoá đại lý <b>'+s.name+'</b>?')){SUP=SUP.filter(z=>z.id!==id);saveStore();refreshDealerMarkers();showDealers();}};
   el.querySelectorAll('.dealer').forEach(d=>d.querySelector('.l').onclick=()=>selectDealer(d.dataset.id));
 }
 
