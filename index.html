@@ -1103,22 +1103,30 @@ async function osrmRoute(from,to){
   return j.routes.map(r=>({km:r.distance/1000, min:r.duration/60, geometry:r.geometry}));
 }
 async function orsRoute(from,to,key){
-  const r=await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson',{
-    method:'POST', headers:{'Authorization':key,'Content-Type':'application/json'},
-    body:JSON.stringify({coordinates:[[from.lng,from.lat],[to.lng,to.lat]],
-      alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.8}})});
-  if(!r.ok) throw new Error('ors '+r.status);
-  const j=await r.json();
-  if(!j.features||!j.features.length) throw new Error('no route');
-  const routes=j.features.map(f=>({km:f.properties.summary.distance/1000,
-    min:f.properties.summary.duration/60, geometry:f.geometry}));
-  routes.sort((a,b)=>a.min-b.min);          // ưu tiên nhanh nhất
-  return routes;
+  const body=JSON.stringify({coordinates:[[from.lng,from.lat],[to.lng,to.lat]],
+      alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.8}});
+  const hosts=['https://api.heigit.org','https://api.openrouteservice.org']; // URL mới trước
+  let lastErr;
+  for(const h of hosts){
+    try{
+      const r=await fetch(h+'/v2/directions/driving-car/geojson',{
+        method:'POST', headers:{'Authorization':key,'Content-Type':'application/json'}, body});
+      if(!r.ok){ lastErr=new Error(h+' '+r.status); continue; }
+      const j=await r.json();
+      if(!j.features||!j.features.length){ lastErr=new Error('no route'); continue; }
+      const routes=j.features.map(f=>({km:f.properties.summary.distance/1000,
+        min:f.properties.summary.duration/60, geometry:f.geometry}));
+      routes.sort((a,b)=>a.min-b.min);        // ưu tiên nhanh nhất
+      return routes;
+    }catch(e){ lastErr=e; }
+  }
+  throw lastErr||new Error('ors failed');
 }
 async function roadRoute(from,to){
   const key=(localStorage.getItem('ors_key')||'').trim();
-  if(key){ try{ return await orsRoute(from,to,key); }catch(e){ /* lỗi khoá -> quay về OSRM */ } }
-  return await osrmRoute(from,to);
+  if(key){ try{ const r=await orsRoute(from,to,key); r.engine='ors'; return r; }
+    catch(e){ window._orsErr=String(e); } }
+  const r=await osrmRoute(from,to); r.engine = key?'osrm_fallback':'osrm'; return r;
 }
 function drawRoutes(routes, act){
   clearRoute();
@@ -1153,9 +1161,15 @@ async function computeRoad(from,to,label){
           + routes.map((rt,i)=>`<div class="route ${i===act?'on':''}" data-i="${i}">
                <b>Tuyến ${i+1}</b> · ${rt.km.toFixed(1)} km · ~${Math.round(rt.min)} phút</div>`).join('')
         : '';
+      const note = routes.engine==='ors'
+          ? `<div class="kv" style="color:#34d399;margin-top:4px">✅ Nhiều tuyến (OpenRouteService) · giờ sát thực tế</div>`
+        : routes.engine==='osrm_fallback'
+          ? `<div class="kv" style="color:#f59e0b;margin-top:4px">⚠️ Khoá định tuyến chưa dùng được — tạm dùng dịch vụ mặc định (1 tuyến). Kiểm tra lại khoá trong 📍 Điểm xuất phát.</div>`
+          : '';
       rr.innerHTML=`<div class="distline"><div>
           <div class="big" style="color:#34d399">${routes[act].km.toFixed(1)} km</div>
-          <div class="mut">đường bộ tới ${label} · ~${Math.round(routes[act].min)} phút <i>(ước tính)</i></div></div></div>
+          <div class="mut">đường bộ tới ${label} · ~${Math.round(routes[act].min)} phút${routes.engine==='ors'?'':' <i>(ước tính)</i>'}</div></div></div>
+        ${note}
         ${others}
         <a class="btn" style="margin-top:8px;display:block" target="_blank" href="${gmap}">🧭 Chỉ đường Google Maps (tuyến & giờ chính xác)</a>`;
       rr.querySelectorAll('.route').forEach(el=>el.onclick=()=>{act=+el.dataset.i;render();});
