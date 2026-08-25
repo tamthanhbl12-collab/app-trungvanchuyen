@@ -742,6 +742,9 @@ svg.leaflet-image-layer.leaflet-interactive path {
   .distline .mut{color:var(--muted);font-size:12px}
   .distline button{margin-left:auto;padding:6px 10px;border-radius:8px;border:1px solid var(--line);
     background:var(--accent);color:#fff;font-size:12px;cursor:pointer;font-weight:600}
+  .route{padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:13px;cursor:pointer;background:var(--panel)}
+  .route:hover{border-color:var(--green)}
+  .route.on{border-color:var(--green);background:#0e2a1a;color:#a7f3c8}
   .fld{margin:8px 0}
   .fld label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
   .dealer{display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;
@@ -1094,16 +1097,19 @@ function updateDealerCount(){
 
 // ---- tính đường bộ (OSRM public, không cần key) ----
 async function roadRoute(from,to){
-  const u=`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`;
+  const u=`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?alternatives=3&overview=full&geometries=geojson`;
   const j=await (await fetch(u)).json();
   if(j.code!=='Ok'||!j.routes||!j.routes.length) throw new Error('no route');
-  const r=j.routes[0];
-  return {km:r.distance/1000, min:r.duration/60, geometry:r.geometry};
+  return j.routes.map(r=>({km:r.distance/1000, min:r.duration/60, geometry:r.geometry}));
 }
-function drawRoute(geo){
+function drawRoutes(routes, act){
   clearRoute();
-  routeLayer=L.geoJSON(geo,{style:{color:'#22c55e',weight:5,opacity:.85}}).addTo(map);
-  try{map.fitBounds(routeLayer.getBounds(),{padding:[40,40]});}catch(e){}
+  routeLayer=L.layerGroup().addTo(map);
+  routes.forEach((rt,i)=>{
+    L.geoJSON(rt.geometry,{style:{color:i===act?'#22c55e':'#9aa7bf',
+      weight:i===act?6:4,opacity:i===act?0.9:0.5,dashArray:i===act?null:'7,7'}}).addTo(routeLayer);
+  });
+  try{map.fitBounds(L.geoJSON(routes[act].geometry).getBounds(),{padding:[40,40]});}catch(e){}
 }
 function updateFromBase(obj){
   const box=document.getElementById('fromBase'); if(!box) return;
@@ -1119,11 +1125,24 @@ async function computeRoad(from,to,label){
   const rr=document.getElementById('roadResult');
   if(rr) rr.innerHTML=`<div class="kv">⏳ Đang tính đường đi thực tế…</div>`;
   try{
-    const res=await roadRoute(from,to);
-    drawRoute(res.geometry);
-    if(rr) rr.innerHTML=`<div class="distline"><div>
-        <div class="big" style="color:#34d399">${res.km.toFixed(1)} km</div>
-        <div class="mut">đường bộ tới ${label} · khoảng ${Math.round(res.min)} phút xe</div></div></div>`;
+    const routes=await roadRoute(from,to);
+    let act=0;
+    const gmap=`https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&travelmode=driving`;
+    const render=()=>{
+      drawRoutes(routes,act);
+      const others = routes.length>1
+        ? `<div class="kv" style="margin:8px 0 4px">Chọn tuyến (${routes.length} tuyến):</div>`
+          + routes.map((rt,i)=>`<div class="route ${i===act?'on':''}" data-i="${i}">
+               <b>Tuyến ${i+1}</b> · ${rt.km.toFixed(1)} km · ~${Math.round(rt.min)} phút</div>`).join('')
+        : '';
+      rr.innerHTML=`<div class="distline"><div>
+          <div class="big" style="color:#34d399">${routes[act].km.toFixed(1)} km</div>
+          <div class="mut">đường bộ tới ${label} · ~${Math.round(routes[act].min)} phút <i>(ước tính)</i></div></div></div>
+        ${others}
+        <a class="btn" style="margin-top:8px;display:block" target="_blank" href="${gmap}">🧭 Chỉ đường Google Maps (tuyến & giờ chính xác)</a>`;
+      rr.querySelectorAll('.route').forEach(el=>el.onclick=()=>{act=+el.dataset.i;render();});
+    };
+    render();
   }catch(e){
     if(rr) rr.innerHTML=`<div class="kv">⚠️ Chưa tính được đường bộ (mạng yếu hoặc dịch vụ định tuyến đang bận). Thử lại sau.</div>`;
   }
