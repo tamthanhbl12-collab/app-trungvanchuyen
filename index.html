@@ -1105,22 +1105,28 @@ async function osrmRoute(from,to){
 async function orsRoute(from,to,key){
   const body=JSON.stringify({coordinates:[[from.lng,from.lat],[to.lng,to.lat]],
       alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.8}});
-  const hosts=['https://api.heigit.org','https://api.openrouteservice.org']; // URL mới trước
-  let lastErr;
-  for(const h of hosts){
+  const attempts=[
+    ['https://api.openrouteservice.org', key],
+    ['https://api.openrouteservice.org', 'Bearer '+key],
+    ['https://api.heigit.org', key],
+    ['https://api.heigit.org', 'Bearer '+key],
+  ];
+  let lastErr='';
+  for(const [h,auth] of attempts){
     try{
       const r=await fetch(h+'/v2/directions/driving-car/geojson',{
-        method:'POST', headers:{'Authorization':key,'Content-Type':'application/json'}, body});
-      if(!r.ok){ lastErr=new Error(h+' '+r.status); continue; }
+        method:'POST', headers:{'Authorization':auth,'Content-Type':'application/json','Accept':'application/geo+json'}, body});
+      if(!r.ok){ let t=''; try{t=(await r.text()).slice(0,140);}catch(e){}
+        lastErr=`${h.replace('https://','')} [${auth.startsWith('Bearer')?'Bearer':'plain'}] → ${r.status} ${t}`; continue; }
       const j=await r.json();
-      if(!j.features||!j.features.length){ lastErr=new Error('no route'); continue; }
+      if(!j.features||!j.features.length){ lastErr='không có tuyến'; continue; }
       const routes=j.features.map(f=>({km:f.properties.summary.distance/1000,
         min:f.properties.summary.duration/60, geometry:f.geometry}));
       routes.sort((a,b)=>a.min-b.min);        // ưu tiên nhanh nhất
       return routes;
-    }catch(e){ lastErr=e; }
+    }catch(e){ lastErr=`${h.replace('https://','')} → ${String(e).slice(0,80)}`; }
   }
-  throw lastErr||new Error('ors failed');
+  throw new Error(lastErr||'ors failed');
 }
 async function roadRoute(from,to){
   const key=(localStorage.getItem('ors_key')||'').trim();
@@ -1164,7 +1170,7 @@ async function computeRoad(from,to,label){
       const note = routes.engine==='ors'
           ? `<div class="kv" style="color:#34d399;margin-top:4px">✅ Nhiều tuyến (OpenRouteService) · giờ sát thực tế</div>`
         : routes.engine==='osrm_fallback'
-          ? `<div class="kv" style="color:#f59e0b;margin-top:4px">⚠️ Khoá định tuyến chưa dùng được — tạm dùng dịch vụ mặc định (1 tuyến). Kiểm tra lại khoá trong 📍 Điểm xuất phát.</div>`
+          ? `<div class="kv" style="color:#f59e0b;margin-top:4px">⚠️ Khoá định tuyến chưa dùng được — tạm dùng dịch vụ mặc định. Kiểm tra khoá trong 📍 Điểm xuất phát.<br><span style="color:#8a94a8;font-size:11px">Chi tiết lỗi: ${window._orsErr||'?'}</span></div>`
           : '';
       rr.innerHTML=`<div class="distline"><div>
           <div class="big" style="color:#34d399">${routes[act].km.toFixed(1)} km</div>
