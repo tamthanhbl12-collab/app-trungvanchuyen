@@ -1096,11 +1096,29 @@ function updateDealerCount(){
 }
 
 // ---- tính đường bộ (OSRM public, không cần key) ----
-async function roadRoute(from,to){
+async function osrmRoute(from,to){
   const u=`https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?alternatives=3&overview=full&geometries=geojson`;
   const j=await (await fetch(u)).json();
   if(j.code!=='Ok'||!j.routes||!j.routes.length) throw new Error('no route');
   return j.routes.map(r=>({km:r.distance/1000, min:r.duration/60, geometry:r.geometry}));
+}
+async function orsRoute(from,to,key){
+  const r=await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson',{
+    method:'POST', headers:{'Authorization':key,'Content-Type':'application/json'},
+    body:JSON.stringify({coordinates:[[from.lng,from.lat],[to.lng,to.lat]],
+      alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.8}})});
+  if(!r.ok) throw new Error('ors '+r.status);
+  const j=await r.json();
+  if(!j.features||!j.features.length) throw new Error('no route');
+  const routes=j.features.map(f=>({km:f.properties.summary.distance/1000,
+    min:f.properties.summary.duration/60, geometry:f.geometry}));
+  routes.sort((a,b)=>a.min-b.min);          // ưu tiên nhanh nhất
+  return routes;
+}
+async function roadRoute(from,to){
+  const key=(localStorage.getItem('ors_key')||'').trim();
+  if(key){ try{ return await orsRoute(from,to,key); }catch(e){ /* lỗi khoá -> quay về OSRM */ } }
+  return await osrmRoute(from,to);
 }
 function drawRoutes(routes, act){
   clearRoute();
@@ -1168,7 +1186,20 @@ function openBaseSetup(){
       <button id="baseBack">← Quay lại</button>
     </div>
     <div id="baseMsg" class="kv"></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+    <div class="fld"><label>🧭 Khoá định tuyến nâng cao — tuỳ chọn<br>
+      <span style="color:var(--muted)">Có khoá → app hiện <b>nhiều tuyến</b> + giờ chính xác. Không có → vẫn chạy 1 tuyến.</span></label>
+      <input id="orsKey" placeholder="Dán khoá OpenRouteService vào đây" value="${(localStorage.getItem('ors_key')||'')}"></div>
+    <div class="miniactions">
+      <button id="orsSave" class="primary">💾 Lưu khoá</button>
+      <a class="btn ghost" style="text-decoration:none;display:flex;align-items:center;justify-content:center" target="_blank" href="https://openrouteservice.org/dev/#/signup">🔑 Lấy khoá miễn phí</a>
+    </div>
+    <div id="orsMsg" class="kv"></div>
   </div>`;
+  const os=el.querySelector('#orsSave');
+  if(os) os.onclick=()=>{const k=el.querySelector('#orsKey').value.trim();
+    if(k) localStorage.setItem('ors_key',k); else localStorage.removeItem('ors_key');
+    el.querySelector('#orsMsg').innerHTML = k?'✅ Đã lưu khoá — giờ tính đường sẽ hiện nhiều tuyến.':'Đã xoá khoá (dùng lại dịch vụ mặc định).';};
   const setBase=(lat,lng,label)=>{BASE={lat,lng,label};saveStore();refreshBase();
     selectedCode?selectWard(selectedCode,false):resetContent();};
   el.querySelector('#baseGPS').onclick=()=>{
